@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Чат на WebSocket</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        h2 {
+            color: #333;
+            text-align: center;
+        }
+        
+        #status {
+            padding: 10px;
+            background-color: #e8f5e9;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            display: none;
+        }
+        
+        #userCount {
+            float: right;
+            font-weight: bold;
+            color: #2e7d32;
+        }
+        
+        #chat {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: white;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 5px;
+        }
+        
+        .user-message {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196f3;
+        }
+        
+        .system-message {
+            background-color: #fff8e1;
+            border-left: 4px solid #ffb300;
+            font-style: italic;
+            color: #5d4037;
+        }
+        
+        .join-message {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            color: #1b5e20;
+        }
+        
+        .leave-message {
+            background-color: #ffebee;
+            border-left: 4px solid #f44336;
+            color: #b71c1c;
+        }
+        
+        .message-info {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 3px;
+        }
+        
+        #inputArea {
+            display: flex;
+            gap: 10px;
+        }
+        
+        #message {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background-color: #1976d2;
+        }
+        
+        #notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: #ff5722;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        
+        #username {
+            padding: 5px;
+            margin-bottom: 10px;
+            width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Чат на WebSocket</h2>
+    
+    <div id="status">
+        Статус: <span id="connectionStatus">Підключення...</span>
+        <span id="userCount">Користувачів: 0</span>
+    </div>
+    
+    <div id="notification">Нове повідомлення в чаті!</div>
+    
+    <div id="chat"></div>
+    
+    <div>
+        <input type="text" id="username" placeholder="Введіть ваше ім'я" value="Користувач">
+        <button onclick="updateUsername()">Змінити ім'я</button>
+    </div>
+    
+    <div id="inputArea">
+        <input type="text" id="message" placeholder="Введіть повідомлення" onkeypress="handleKeyPress(event)">
+        <button onclick="sendMessage()">Надіслати</button>
+    </div>
+    
+    <script>
+        let socket;
+        let userId = null;
+        let isActive = true;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        let notificationPermission = false;
+        
+        if ('Notification' in window) {
+            if (Notification.permission === 'granted') {
+                notificationPermission = true;
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(permission => {
+                    notificationPermission = permission === 'granted';
+                });
+            }
+        }
+        
+        function showNotification(title, options) {
+            if (notificationPermission && !isActive) {
+                new Notification(title, options);
+            }
+            
+            const notification = document.getElementById('notification');
+            notification.textContent = title;
+            notification.style.display = 'block';
+            
+            setTimeout(() => {
+                notification.style.display = 'none';
+            }, 3000);
+        }
+        
+        document.addEventListener('click', () => {
+            isActive = true;
+            document.getElementById('status').style.backgroundColor = '#e8f5e9';
+        });
+        
+        document.addEventListener('mousemove', () => {
+            isActive = true;
+        });
+        
+        let inactivityTimer;
+        function resetInactivityTimer() {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = setTimeout(() => {
+                isActive = false;
+                document.getElementById('status').style.backgroundColor = '#ffecb3';
+            }, 10000); 
+        }
+        
+        resetInactivityTimer();
+        document.addEventListener('mousemove', resetInactivityTimer);
+        document.addEventListener('keypress', resetInactivityTimer);
+        
+        function connect() {
+            socket = new WebSocket('ws://localhost:3000');
+            
+            socket.onopen = () => {
+                console.log('Підключено до сервера');
+                document.getElementById('connectionStatus').textContent = 'Підключено';
+                document.getElementById('status').style.display = 'block';
+                document.getElementById('status').style.backgroundColor = '#e8f5e9';
+                reconnectAttempts = 0;
+            };
+            
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    const chat = document.getElementById('chat');
+                    
+                    const newMessage = document.createElement('div');
+                    
+                    if (data.type === 'system') {
+                        newMessage.className = 'system-message';
+                        
+                        if (data.event === 'user_joined') {
+                            newMessage.className = 'join-message';
+                            newMessage.innerHTML = `
+                                <div class="message-info">${new Date(data.timestamp).toLocaleTimeString()}</div>
+                                <strong>${data.username}</strong> приєднався до чату
+                            `;
+                            showNotification(`${data.username} приєднався до чату`);
+                        } 
+                        else if (data.event === 'user_left' || data.event === 'user_timeout') {
+                            newMessage.className = 'leave-message';
+                            newMessage.innerHTML = `
+                                <div class="message-info">${new Date(data.timestamp).toLocaleTimeString()}</div>
+                                <strong>${data.username}</strong> покинув чат
+                            `;
+                        }
+                        else if (data.event === 'welcome') {
+                            newMessage.className = 'system-message';
+                            newMessage.innerHTML = `
+                                <div class="message-info">${new Date(data.timestamp).toLocaleTimeString()}</div>
+                                ${data.message}
+                            `;
+                            userId = data.userId;
+                        }
+                        
+                        if (data.activeUsers !== undefined) {
+                            document.getElementById('userCount').textContent = `Користувачів: ${data.activeUsers}`;
+                        }
+                    } 
+                    else {
+                        newMessage.className = 'user-message';
+                        const isCurrentUser = data.userId === userId;
+                        
+                        newMessage.innerHTML = `
+                            <div class="message-info">
+                                ${new Date(data.timestamp).toLocaleTimeString()} | 
+                                <strong>${data.username}</strong>
+                            </div>
+                            ${data.content || data.message}
+                        `;
+                        
+                        if (!isCurrentUser && !isActive) {
+                            showNotification(`Нове повідомлення від ${data.username}`, {
+                                body: data.content || data.message,
+                                icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png'
+                            });
+                        }
+                    }
+                    
+                    chat.appendChild(newMessage);
+                    chat.scrollTop = chat.scrollHeight;
+                    
+                } catch (error) {
+                    const chat = document.getElementById('chat');
+                    const newMessage = document.createElement('div');
+                    newMessage.className = 'user-message';
+                    newMessage.textContent = event.data;
+                    chat.appendChild(newMessage);
+                    chat.scrollTop = chat.scrollHeight;
+                    
+                    if (!isActive) {
+                        showNotification('Нове повідомлення в чаті', {
+                            body: event.data.substring(0, 100)
+                        });
+                    }
+                }
+            };
+            
+            socket.onerror = (error) => {
+                console.error('Помилка WebSocket:', error);
+                document.getElementById('connectionStatus').textContent = 'Помилка підключення';
+                document.getElementById('status').style.backgroundColor = '#ffcdd2';
+            };
+            
+            socket.onclose = (event) => {
+                console.log('З\'єднання закрито', event.code, event.reason);
+                document.getElementById('connectionStatus').textContent = 'Відключено';
+                document.getElementById('status').style.backgroundColor = '#ffcdd2';
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    
+                    console.log(`Спроба перепідключення ${reconnectAttempts} через ${delay}ms`);
+                    
+                    setTimeout(() => {
+                        console.log('Перепідключення...');
+                        connect();
+                    }, delay);
+                }
+            };
+        }
+        
+        function sendMessage() {
+            const messageInput = document.getElementById('message');
+            const usernameInput = document.getElementById('username');
+            const message = messageInput.value.trim();
+            
+            if (message && socket.readyState === WebSocket.OPEN) {
+                const messageObj = {
+                    type: 'message',
+                    content: message,
+                    username: usernameInput.value || 'Анонім',
+                    timestamp: new Date().toISOString()
+                };
+                
+                socket.send(JSON.stringify(messageObj));
+                messageInput.value = '';
+                
+                isActive = true;
+                resetInactivityTimer();
+            }
+        }
+        
+        function updateUsername() {
+            const usernameInput = document.getElementById('username');
+            const newUsername = usernameInput.value.trim();
+            
+            if (newUsername && socket.readyState === WebSocket.OPEN) {
+                const messageObj = {
+                    type: 'system',
+                    event: 'username_change',
+                    oldUsername: 'Користувач',
+                    newUsername: newUsername,
+                    timestamp: new Date().toISOString()
+                };
+                
+                socket.send(JSON.stringify(messageObj));
+                showNotification(`Ім'я змінено на: ${newUsername}`);
+            }
+        }
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+        
+        window.onload = connect;
+    </script>
+</body>
+</html>

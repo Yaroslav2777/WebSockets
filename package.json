@@ -1,0 +1,13 @@
+{
+  "name": "websocket-chat",
+  "version": "1.0.0",
+  "description": "Розширений чат на WebSocket",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
