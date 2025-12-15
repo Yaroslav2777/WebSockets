@@ -72,6 +72,15 @@
             color: #b71c1c;
         }
         
+        .disconnect-message {
+            background-color: #fce4ec;
+            border-left: 4px solid #e91e63;
+            color: #880e4f;
+            font-weight: bold;
+            text-align: center;
+            padding: 15px;
+        }
+        
         .message-info {
             font-size: 12px;
             color: #666;
@@ -81,6 +90,7 @@
         #inputArea {
             display: flex;
             gap: 10px;
+            margin-top: 10px;
         }
         
         #message {
@@ -101,8 +111,21 @@
             font-size: 14px;
         }
         
-        button:hover {
+        button:hover:not(:disabled) {
             background-color: #1976d2;
+        }
+        
+        button:disabled {
+            background-color: #bdbdbd;
+            cursor: not-allowed;
+        }
+        
+        #disconnectBtn {
+            background-color: #f44336;
+        }
+        
+        #disconnectBtn:hover:not(:disabled) {
+            background-color: #d32f2f;
         }
         
         #notification {
@@ -123,6 +146,28 @@
             margin-bottom: 10px;
             width: 200px;
         }
+        
+        .control-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+            justify-content: center;
+        }
+        
+        .disconnected-overlay {
+            position: relative;
+        }
+        
+        .disconnected-overlay::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.1);
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -139,12 +184,16 @@
     
     <div>
         <input type="text" id="username" placeholder="Введіть ваше ім'я" value="Користувач">
-        <button onclick="updateUsername()">Змінити ім'я</button>
+        <button id="changeNameBtn" onclick="updateUsername()">Змінити ім'я</button>
     </div>
     
     <div id="inputArea">
         <input type="text" id="message" placeholder="Введіть повідомлення" onkeypress="handleKeyPress(event)">
-        <button onclick="sendMessage()">Надіслати</button>
+        <button id="sendBtn" onclick="sendMessage()">Надіслати</button>
+    </div>
+    
+    <div class="control-buttons">
+        <button id="disconnectBtn" onclick="disconnectFromChat()">Відключитися</button>
     </div>
     
     <script>
@@ -154,6 +203,7 @@
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let notificationPermission = false;
+        let isDisconnected = false;
         
         if ('Notification' in window) {
             if (Notification.permission === 'granted') {
@@ -181,7 +231,9 @@
         
         document.addEventListener('click', () => {
             isActive = true;
-            document.getElementById('status').style.backgroundColor = '#e8f5e9';
+            if (!isDisconnected) {
+                document.getElementById('status').style.backgroundColor = '#e8f5e9';
+            }
         });
         
         document.addEventListener('mousemove', () => {
@@ -193,13 +245,80 @@
             clearTimeout(inactivityTimer);
             inactivityTimer = setTimeout(() => {
                 isActive = false;
-                document.getElementById('status').style.backgroundColor = '#ffecb3';
+                if (!isDisconnected) {
+                    document.getElementById('status').style.backgroundColor = '#ffecb3';
+                }
             }, 10000); 
         }
         
         resetInactivityTimer();
         document.addEventListener('mousemove', resetInactivityTimer);
         document.addEventListener('keypress', resetInactivityTimer);
+        
+        function disableControls() {
+            document.getElementById('message').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+            document.getElementById('username').disabled = true;
+            document.getElementById('changeNameBtn').disabled = true;
+            document.getElementById('disconnectBtn').disabled = true;
+            
+            const inputArea = document.getElementById('inputArea');
+            inputArea.classList.add('disconnected-overlay');
+        }
+        
+        function showDisconnectMessage(message) {
+            const chat = document.getElementById('chat');
+            const disconnectMsg = document.createElement('div');
+            disconnectMsg.className = 'message disconnect-message';
+            disconnectMsg.innerHTML = `
+                <div class="message-info">${new Date().toLocaleTimeString()}</div>
+                ${message}
+            `;
+            chat.appendChild(disconnectMsg);
+            chat.scrollTop = chat.scrollHeight;
+        }
+        
+        async function disconnectFromChat() {
+            if (!userId) {
+                alert('Помилка: не вдалося визначити ваш ідентифікатор');
+                return;
+            }
+            
+            if (isDisconnected) {
+                alert('Ви вже відключені від чату');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://localhost:3000/disconnect?userId=${userId}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    isDisconnected = true;
+                    
+                    showDisconnectMessage('Ви відключились від чату');
+                    
+                    document.getElementById('connectionStatus').textContent = 'Відключено';
+                    document.getElementById('status').style.backgroundColor = '#ffcdd2';
+                    
+                    disableControls();
+                    
+                    showNotification('Відключення успішне', {
+                        body: 'Ви успішно відключились від чату',
+                        icon: 'https://cdn-icons-png.flaticon.com/512/1828/1828490.png'
+                    });
+                    
+                    reconnectAttempts = maxReconnectAttempts;
+                    
+                    console.log('Успішно відключено від чату:', data.message);
+                } else {
+                    alert('Помилка відключення: ' + data.message);
+                }
+            } catch (error) {
+                console.error('Помилка при відключенні:', error);
+                alert('Помилка при відключенні від чату. Перевірте підключення до сервера.');
+            }
+        }
         
         function connect() {
             socket = new WebSocket('ws://localhost:3000');
@@ -291,16 +410,21 @@
             
             socket.onerror = (error) => {
                 console.error('Помилка WebSocket:', error);
-                document.getElementById('connectionStatus').textContent = 'Помилка підключення';
-                document.getElementById('status').style.backgroundColor = '#ffcdd2';
+                if (!isDisconnected) {
+                    document.getElementById('connectionStatus').textContent = 'Помилка підключення';
+                    document.getElementById('status').style.backgroundColor = '#ffcdd2';
+                }
             };
             
             socket.onclose = (event) => {
                 console.log('З\'єднання закрито', event.code, event.reason);
-                document.getElementById('connectionStatus').textContent = 'Відключено';
-                document.getElementById('status').style.backgroundColor = '#ffcdd2';
                 
-                if (reconnectAttempts < maxReconnectAttempts) {
+                if (!isDisconnected) {
+                    document.getElementById('connectionStatus').textContent = 'Відключено';
+                    document.getElementById('status').style.backgroundColor = '#ffcdd2';
+                }
+                
+                if (reconnectAttempts < maxReconnectAttempts && !isDisconnected) {
                     reconnectAttempts++;
                     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
                     
@@ -315,6 +439,11 @@
         }
         
         function sendMessage() {
+            if (isDisconnected) {
+                alert('Ви відключені від чату. Оновіть сторінку для повторного підключення.');
+                return;
+            }
+            
             const messageInput = document.getElementById('message');
             const usernameInput = document.getElementById('username');
             const message = messageInput.value.trim();
@@ -336,6 +465,11 @@
         }
         
         function updateUsername() {
+            if (isDisconnected) {
+                alert('Ви відключені від чату. Оновіть сторінку для повторного підключення.');
+                return;
+            }
+            
             const usernameInput = document.getElementById('username');
             const newUsername = usernameInput.value.trim();
             

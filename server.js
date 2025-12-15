@@ -1,6 +1,79 @@
 const WebSocket = require('ws');
+const http = require('http');
+const url = require('url');
 
-const server = new WebSocket.Server({ port: 3000 });
+const httpServer = http.createServer((req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+  
+  if (parsedUrl.pathname === '/disconnect' && req.method === 'GET') {
+    const userId = parsedUrl.query.userId;
+    
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    
+    if (!userId) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ 
+        success: false, 
+        message: 'userId не вказано' 
+      }));
+      return;
+    }
+    
+    let userFound = false;
+    let username = '';
+    
+    for (let [ws, clientInfo] of clients) {
+      if (clientInfo.id === userId) {
+        userFound = true;
+        username = clientInfo.username;
+        
+        const leaveMessage = JSON.stringify({
+          type: 'system',
+          event: 'user_left',
+          userId: userId,
+          username: username,
+          timestamp: new Date().toISOString(),
+          activeUsers: clients.size - 1
+        });
+        
+        clients.delete(ws);
+        
+        broadcast(leaveMessage);
+        
+        ws.close(1000, 'Користувач відключився через HTTP запит');
+        
+        console.log(`Користувач ${username} (${userId}) відключений через HTTP запит`);
+        
+        break;
+      }
+    }
+    
+    if (userFound) {
+      res.writeHead(200);
+      res.end(JSON.stringify({ 
+        success: true, 
+        message: `Користувач ${username} успішно відключений`,
+        username: username
+      }));
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ 
+        success: false, 
+        message: 'Користувача не знайдено' 
+      }));
+    }
+  } else {
+    res.writeHead(404);
+    res.end(JSON.stringify({ 
+      success: false, 
+      message: 'Маршрут не знайдено' 
+    }));
+  }
+});
+
+const wss = new WebSocket.Server({ server: httpServer });
+
 const clients = new Map(); 
 let userCount = 0;
 
@@ -8,10 +81,11 @@ const generateUserId = () => {
   return `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 };
 
-server.on('connection', (ws) => {
+wss.on('connection', (ws) => {
   const userId = generateUserId();
   userCount++;
-    clients.set(ws, {
+  
+  clients.set(ws, {
     id: userId,
     username: `Користувач ${userCount}`,
     lastActive: Date.now(),
@@ -101,12 +175,6 @@ server.on('connection', (ws) => {
   
   ws.on('error', (error) => {
     console.error(`Помилка WebSocket для користувача ${userId}:`, error);
-    
-    setTimeout(() => {
-      if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-        console.log(`Спроба перепідключення для ${userId}...`);
-      }
-    }, 5000);
   });
   
   ws.isAlive = true;
@@ -156,9 +224,13 @@ const interval = setInterval(() => {
   }
 }, 30000);
 
-server.on('close', () => {
+wss.on('close', () => {
   clearInterval(interval);
   console.log('Сервер зупинено');
 });
 
-console.log('Сервер чату запущено на ws://localhost:3000');
+httpServer.listen(3000, () => {
+  console.log('Сервер чату запущено на ws://localhost:3000');
+  console.log('HTTP сервер доступний на http://localhost:3000');
+  console.log('Маршрут відключення: http://localhost:3000/disconnect?userId=YOUR_USER_ID');
+});
